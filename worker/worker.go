@@ -32,6 +32,7 @@ func (handler *Handler) handle(w http.ResponseWriter, r *http.Request) {
 			result += handler.Id
 		}
 		results = append(results, result)
+		//fmt.Printf("Action = %s Result = %s\n", message.Action, result)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	resp := &common.StoreResponse{
