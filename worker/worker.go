@@ -2,14 +2,18 @@ package worker
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"os"
+	"sync"
 
 	common "github.com/chunyang-wen/hackson0/common"
 )
 
 var store = make(map[string]string)
+var m sync.RWMutex
+var l = log.New(os.Stderr, "INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
 
 type Handler struct {
 	Id string
@@ -25,10 +29,18 @@ func (handler *Handler) handle(w http.ResponseWriter, r *http.Request) {
 		result := message.RequestId
 		result += ","
 		if message.Action == "R" {
-			hash, _ := store[message.ObjectId]
+			m.RLock()
+			hash, ok := store[message.ObjectId]
+			m.RUnlock()
+			if !ok {
+				l.Fatalf("%s not existed\n", message.ObjectId)
+			}
 			result += hash
 		} else {
+			m.Lock()
+			l.Printf("Write %s to store\n", message.ObjectId)
 			store[message.ObjectId] = message.Hash
+			m.Unlock()
 			result += handler.Id
 		}
 		results = append(results, result)
@@ -45,11 +57,14 @@ func (handler *Handler) handle(w http.ResponseWriter, r *http.Request) {
 }
 
 func Run(opts common.Options) {
-	fmt.Printf("Run worker %s on port = %s\n", opts.Id, opts.Port)
+	l.Printf("Run worker %s on port = %s\n", opts.Id, opts.Port)
 	server := http.Server{
 		Addr: "localhost:" + opts.Port,
 	}
 	handler := &Handler{Id: opts.Id}
 	http.HandleFunc("/v1/messages", handler.handle)
-	server.ListenAndServe()
+	err := server.ListenAndServe()
+	if err != nil {
+		l.Fatal("Error: %v", err)
+	}
 }

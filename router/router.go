@@ -13,17 +13,20 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	common "github.com/chunyang-wen/hackson0/common"
 )
 
+var l = log.New(os.Stderr, "INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
+
 var meta_info = make(map[string]int)
 var wg sync.WaitGroup
+var wg_r_w sync.WaitGroup
 
 type BucketStatus struct {
 	bytes int64
-	Id    string
-	index int
+	Id    int
 }
 
 type PriorityQueue []*BucketStatus
@@ -32,8 +35,6 @@ func (pq PriorityQueue) Len() int { return len(pq) }
 
 func (pq PriorityQueue) Swap(i, j int) {
 	pq[i], pq[j] = pq[j], pq[i]
-	pq[i].index = i
-	pq[j].index = j
 }
 
 func (pq PriorityQueue) Less(i, j int) bool {
@@ -62,8 +63,8 @@ func FindBucket(pq *PriorityQueue, message common.StoreRequest) int {
 	target := item.(*BucketStatus)
 	target.bytes += int64(message.Size)
 	heap.Push(pq, target)
-	meta_info[message.ObjectId] = target.index
-	return target.index
+	meta_info[message.ObjectId] = target.Id
+	return target.Id
 }
 
 func ConsumeFile(name string, urls *[]string, pq *PriorityQueue) {
@@ -75,7 +76,8 @@ func ConsumeFile(name string, urls *[]string, pq *PriorityQueue) {
 	bufReader := bufio.NewReader(reader)
 	content, _, _ := bufReader.ReadLine()
 	count := 0
-	messages := make(map[int][]common.StoreRequest)
+	read_messages := make(map[int][]common.StoreRequest)
+	write_messages := make(map[int][]common.StoreRequest)
 	for len(content) != 0 {
 		arrays := strings.Split(string(content), ",")
 		content, _, _ = bufReader.ReadLine()
@@ -85,61 +87,106 @@ func ConsumeFile(name string, urls *[]string, pq *PriorityQueue) {
 			ObjectId:  arrays[2],
 		}
 		if message.Action == "W" {
-			message.Size, _ = strconv.Atoi(arrays[3])
+			size, _ := strconv.Atoi(arrays[3])
+			message.Size = size
 			message.Hash = arrays[4]
+			bucket_id := FindBucket(pq, message)
+			write_messages[bucket_id] = append(write_messages[bucket_id], message)
+		} else {
+			bucket_id := FindBucket(pq, message)
+			read_messages[bucket_id] = append(read_messages[bucket_id], message)
 		}
-		bucket_id := FindBucket(pq, message)
-		messages[bucket_id] = append(messages[bucket_id], message)
 		count += 1
-		if count%1000 == 0 {
-			wg.Add(1)
-			go func(m map[int][]common.StoreRequest) {
-				defer wg.Done()
-				PostRequest(urls, m)
-			}(messages)
-			messages = make(map[int][]common.StoreRequest)
+		if count%10000 == 0 {
+			if len(write_messages) != 0 {
+				wg.Add(1)
+				wg_r_w.Add(1)
+				go func(m map[int][]common.StoreRequest) {
+					defer wg.Done()
+					defer wg_r_w.Done()
+					PostRequest(urls, m, "W")
+				}(write_messages)
+			}
+			wg_r_w.Wait()
+			l.Printf("Write message successfully\n")
+			if len(read_messages) != 0 {
+				wg.Add(1)
+				go func(m map[int][]common.StoreRequest) {
+					defer wg.Done()
+					PostRequest(urls, m, "R")
+				}(read_messages)
+			}
+			read_messages = make(map[int][]common.StoreRequest)
+			write_messages = make(map[int][]common.StoreRequest)
 		}
 		if count%1000000 == 0 {
-			fmt.Printf("Processed to %d\n", count)
+			l.Printf("Processed to %d\n", count)
 		}
 	}
-	if len(messages) != 0 {
+	if len(write_messages) != 0 {
 		wg.Add(1)
-		go func() {
+		wg_r_w.Add(1)
+		go func(m map[int][]common.StoreRequest) {
 			defer wg.Done()
-			PostRequest(urls, messages)
-		}()
+			defer wg_r_w.Done()
+			PostRequest(urls, m, "W")
+		}(write_messages)
 	}
-	fmt.Printf("Processed to %d\n", count)
+
+	wg_r_w.Wait()
+	if len(read_messages) != 0 {
+		wg.Add(1)
+		go func(m map[int][]common.StoreRequest) {
+			defer wg.Done()
+			PostRequest(urls, m, "R")
+		}(read_messages)
+	}
+	if len(read_messages)+len(write_messages) != 0 {
+		l.Printf("Processed to %d\n", count)
+	}
+	read_messages = make(map[int][]common.StoreRequest)
+	write_messages = make(map[int][]common.StoreRequest)
+
 }
 
-func PostRequest(url *[]string, message map[int][]common.StoreRequest) {
+func PostRequest(url *[]string, message map[int][]common.StoreRequest, action string) {
 	for bucket_id, messages := range message {
-		postBody, _ := json.Marshal(messages)
-		fmt.Println("Get url: ", url)
-		fmt.Println("Post message: ", messages)
-		resp, err := http.Post((*url)[bucket_id], "application/json", bytes.NewBuffer(postBody))
-		if err != nil {
-			log.Fatalf("An error %v", err)
-			os.Exit(1)
+		wg.Add(1)
+		if action == "W" {
+			wg_r_w.Add(1)
 		}
-		defer resp.Body.Close()
-		body, _ := ioutil.ReadAll(resp.Body)
-		var messages common.StoreResponse
-		_ = json.Unmarshal(body, &messages)
-		for _, message := range messages.Result {
-			fmt.Println(message)
-		}
+		go func(bid int, m []common.StoreRequest) {
+			defer wg.Done()
+			if action == "W" {
+				defer wg_r_w.Done()
+			}
+			postBody, _ := json.Marshal(m)
+			//l.Println("Get url: ", url)
+			//l.Println("Post message: ", messages)
+			resp, err := http.Post((*url)[bid], "application/json", bytes.NewBuffer(postBody))
+			if err != nil {
+				l.Fatalf("An error %v", err)
+			}
+			defer resp.Body.Close()
+			body, _ := ioutil.ReadAll(resp.Body)
+			var response common.StoreResponse
+			_ = json.Unmarshal(body, &response)
+			for _, result := range response.Result {
+				fmt.Println(result)
+			}
+		}(bucket_id, messages)
+
 	}
 }
 
 func Run(opts common.Options) {
-	fmt.Println("Run router")
+	l.Println("Run router")
+	start_time := time.Now()
 	pq := make(PriorityQueue, opts.Num)
 	urls := make([]string, opts.Num)
 	wg.Add(1)
 	for i := 0; i < opts.Num; i++ {
-		pq[i] = &BucketStatus{Id: strconv.Itoa(i), bytes: 0, index: i}
+		pq[i] = &BucketStatus{Id: i, bytes: 0}
 		port, _ := strconv.Atoi(opts.Port)
 		port += i
 		url := "http://localhost:" + strconv.Itoa(port) + "/v1/messages"
@@ -149,4 +196,10 @@ func Run(opts common.Options) {
 	ConsumeFile(opts.File, &urls, &pq)
 	wg.Done()
 	wg.Wait()
+	for pq.Len() != 0 {
+		item := heap.Pop(&pq).(*BucketStatus)
+		l.Printf("Bucket id: %s, bytes: %d", item.Id, item.bytes)
+	}
+	end_time := time.Now()
+	l.Println(end_time.Sub(start_time))
 }

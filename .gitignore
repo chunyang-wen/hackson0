@@ -14,3 +14,9 @@
 # Dependency directories (remove the comment below to include it)
 # vendor/
 hackson0
+*.log
+*.pyc
+*.txt
+pid.info
+r.sh
+w.sh
