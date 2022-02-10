@@ -1,7 +1,7 @@
 package common
 
 type Options struct {
-    Num uint `long:"num"  short:"n" description:"Number of workers"`
+    Num int `long:"num"  short:"n" description:"Number of workers"`
 
 	File string `short:"f" long:"file" description:"A file" value-name:"FILE"`
 
