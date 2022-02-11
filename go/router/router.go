@@ -198,7 +198,7 @@ func Run(opts common.Options) {
 	wg.Wait()
 	for pq.Len() != 0 {
 		item := heap.Pop(&pq).(*BucketStatus)
-		l.Printf("Bucket id: %s, bytes: %d", item.Id, item.bytes)
+		l.Printf("Bucket id: %d, bytes: %d", item.Id, item.bytes)
 	}
 	end_time := time.Now()
 	l.Println(end_time.Sub(start_time))
