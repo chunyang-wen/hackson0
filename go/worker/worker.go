@@ -38,7 +38,7 @@ func (handler *Handler) handle(w http.ResponseWriter, r *http.Request) {
 			result += hash
 		} else {
 			m.Lock()
-			l.Printf("Write %s to store\n", message.ObjectId)
+			//l.Printf("Write %s to store\n", message.ObjectId)
 			store[message.ObjectId] = message.Hash
 			m.Unlock()
 			result += handler.Id

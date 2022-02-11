@@ -108,7 +108,7 @@ func ConsumeFile(name string, urls *[]string, pq *PriorityQueue) {
 				}(write_messages)
 			}
 			wg_r_w.Wait()
-			l.Printf("Write message successfully\n")
+			//l.Printf("Write message successfully\n")
 			if len(read_messages) != 0 {
 				wg.Add(1)
 				go func(m map[int][]common.StoreRequest) {
